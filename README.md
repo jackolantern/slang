@@ -3,6 +3,12 @@
 Slang is short for "simple language".
 It is a simple functional language that is "easy" to extend.
 
+## Example
+
+```bash
+$ slang examples/factorial.slang
+```
+
 ## Language Overview
 
 A slang program is executed in three stages:
