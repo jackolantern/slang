@@ -57,13 +57,13 @@ class Function(Type):
         return f"Function<{parameters}, {self.ret}>"
 
 
-class UnionType(Type):
+class Union(Type):
     def __init__(self, lhs: Type, rhs: Type):
         self.lhs = lhs
         self.rhs = rhs
 
     def __eq__(self, other):
-        return isinstance(other, UnionType) and (
+        return isinstance(other, Union) and (
             (self.lhs == other.lhs and self.rhs == other.rhs)
             or (self.lhs == other.rhs and self.rhs == other.lhs)
         )
@@ -118,7 +118,7 @@ class Universe:
             return rhs
         if self.is_subtype(rhs, lhs):
             return lhs
-        return UnionType(lhs, rhs)
+        return Union(lhs, rhs)
 
     # def try_coerce(self, value, dst):
     #     coercion = self.try_coercion(value.typ, dst)
@@ -142,9 +142,9 @@ class Universe:
     def is_subtype(self, lhs, rhs):
         if lhs == rhs:
             return True
-        if isinstance(lhs, UnionType):
+        if isinstance(lhs, Union):
             return self.is_subtype(lhs.lhs, rhs) and self.is_subtype(lhs.rhs, rhs)
-        if isinstance(rhs, UnionType):
+        if isinstance(rhs, Union):
             return self.is_subtype(lhs, rhs.lhs) or self.is_subtype(lhs, rhs.rhs)
         return False
 

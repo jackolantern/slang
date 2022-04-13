@@ -1,38 +1,82 @@
+# pyre-strict
 import types as pytypes
 import logging
-from typing import Optional, List
+from typing import Any, Dict, List, Optional
 
 from . import Position
-from ..pretty import pretty
+
+DEFAULT = object()
+
+
+class EnvironmentError(Exception):
+    pass
+
+
+class Environment:
+    parent: Optional["Environment"]
+    symbols: Dict[str, "Expression"]
+
+    def __init__(
+        self,
+        parent: Optional["Environment"] = None,
+        symbols: Optional[Dict[str, "Expression"]] = None,
+    ):
+        self.parent = parent
+        self.symbols = symbols if symbols else {}
+
+    def push(self) -> "Environment":
+        return Environment(self)
+
+    def keys(self) -> List[str]:
+        return list(self.symbols.keys()) + (self.parent.keys() if self.parent else [])
+
+    def add_symbol(self, name: str, value: "Expression") -> None:
+        existing = self.symbols.get(name)
+        if existing:
+            raise EnvironmentError(f"This env already defines a value named '{name}'.")
+        else:
+            self.symbols[name] = value
+
+    def find_symbol(self, name: str, default: Any = DEFAULT) -> "Expression":
+        if name in self.symbols:
+            return self.symbols[name]
+        if self.parent:
+            return self.parent.find_symbol(name, default)
+        else:
+            if default == DEFAULT:
+                raise EnvironmentError(f"No symbol named '{name}'.")
+            return default
+
+    def get_root(self) -> "Environment":
+        env = self
+        while env.parent:
+            env = env.parent
+        return env
 
 
 class Node:
     def __init__(self, position: Optional[Position]):
         self.position = position
 
+    def __repr__(self):
+        return str(self)
+
 
 class Statement(Node):
-    pass
+    def is_value(self):
+        return False
 
 
 class Expression(Node):
     def is_value(self):
         return False
 
-    def simplify(self):
-        return self
-
 
 class Bang(Statement):
-    def __init__(self, expression, position=None):
+    def __init__(self, expression: Expression, position: Optional[Position] = None):
         assert expression is not None
         super().__init__(position)
         self.expression = expression
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.text("!")
-        p.pretty(self.expression)
 
 
 class Import(Statement):
@@ -52,69 +96,21 @@ class Assignment(Statement):
         self.name = name
         self.expression = expression
 
-    def _repr_pretty_(self, p, cycle):
-        p.text("let ")
-        p.text(self.name)
-        p.text(" = ")
-        p.pretty(self.expression)
-        p.text(";")
-
 
 class Block(Expression):
-    def __init__(self, statements, expression, position=None):
-        assert statements is not None
-        assert expression is not None
+    def __init__(
+        self,
+        statements: List[Statement],
+        expression: Expression,
+        position: Optional[Position] = None,
+    ):
         super().__init__(position)
         self.expression = expression
         self.statements = statements
 
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.text("{")
-        with p.group(4):
-            p.breakable()
-            for s in self.statements:
-                p.pretty(s)
-                p.breakable()
-            p.pretty(self.expression)
-        p.breakable()
-        p.text("}")
 
-
-class Reference(Expression):
-    def __init__(self, name, value, position=None):
-        assert name is not None
-        assert value is not None
-        super().__init__(position)
-        self.name = name
-        self.value = value
-
-    def copy(self):
-        return Reference(self.name, self.value)
-
-    def substitute(self, pairs, threshold):
-        return Reference(self.name, self.value.substitute(pairs, threshold))
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        if p.verbose:
-            p.pretty(self.value)
-        else:
-            p.text(self.name)
-
-
-class This(Reference):
-    def __init__(self, value, position=None):
-        super().__init__("this", value, position)
-
-    def simplify(self):
-        return self
-
-    def substitute(self, pairs, threshold):
-        return self
-
-    def __repr__(self):
-        return "this"
+class This(Expression):
+    pass
 
 
 class UnaryOperation(Expression):
@@ -124,28 +120,6 @@ class UnaryOperation(Expression):
         super().__init__(position)
         self.op = op
         self.expression = expression
-
-    def substitute(self, pairs, threshold):
-        return UnaryOperation(self.op, self.expression.substitute(pairs, threshold))
-
-    def simplify(self):
-        expression = self.expression.simplify()
-        if not expression.is_value():
-            return UnaryOperation(self.op, expression, self.position)
-        if self.op == "+":
-            return expression
-        elif self.op == "-":
-            return -expression
-        elif self.op == "~":
-            return ~expression
-        elif self.op == "!":
-            return not expression
-        raise Exception(f"Unknown unary operator `{self.op}`.")
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.text(self.op)
-        p.pretty(self.expression)
 
 
 class BinaryOperation(Expression):
@@ -158,51 +132,6 @@ class BinaryOperation(Expression):
         self.lhs = lhs
         self.rhs = rhs
 
-    def simplify(self):
-        lhs = self.lhs.simplify()
-        rhs = self.rhs.simplify()
-        if not (lhs.is_value() and rhs.is_value()):
-            return BinaryOperation(self.op, lhs, rhs, self.position)
-        if self.op == "+":
-            return lhs + rhs
-        elif self.op == "-":
-            return lhs - rhs
-        elif self.op == "*":
-            return lhs * rhs
-        elif self.op == "/":
-            return lhs / rhs
-        elif self.op == "^":
-            return lhs ** rhs
-        elif self.op == "%":
-            return lhs % rhs
-        elif self.op == "==":
-            return lhs == rhs
-        elif self.op == "<":
-            return lhs < rhs
-        elif self.op == ">":
-            return lhs > rhs
-        elif self.op == "<=":
-            return lhs <= rhs
-        elif self.op == ">=":
-            return lhs >= rhs
-        raise Exception(f"Unknown binary operator `{self.op}`.")
-
-    def substitute(self, pairs, threshold):
-        return BinaryOperation(
-            self.op,
-            self.lhs.substitute(pairs, threshold),
-            self.rhs.substitute(pairs, threshold),
-        )
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        with p.group(2, "(", ")"):
-            p.pretty(self.lhs)
-            p.text(" ")
-            p.text(self.op)
-            p.text(" ")
-            p.pretty(self.rhs)
-
 
 class Bound(Expression):
     def __init__(self, name, index, position=None):
@@ -212,37 +141,12 @@ class Bound(Expression):
         self.name = name
         self.index = index
 
-    def substitute(self, pairs, threshold):
-        if self.index < threshold:
-            return self
-        index = self.index - threshold
-        (_, value) = pairs[index]
-        return value
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        if p.verbose:
-            p.text(f"<{self.name} : {self.index}>")
-        else:
-            p.text(self.name)
-
 
 class Variable(Expression):
     def __init__(self, name, position=None):
         assert name is not None
         super().__init__(position)
         self.name = name
-
-    def substitute(self, pairs, threshold):
-        return self
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        if p.verbose:
-            p.text("var:")
-            p.text(self.name)
-        else:
-            p.text(self.name)
 
 
 class IfThenElse(Expression):
@@ -255,56 +159,31 @@ class IfThenElse(Expression):
         self.true = true
         self.false = false
 
-    def substitute(self, pairs, threshold):
-        test = self.test.substitute(pairs, threshold)
-        true = self.true.substitute(pairs, threshold)
-        false = self.false.substitute(pairs, threshold)
-        return IfThenElse(test, true, false)
 
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.text("if ")
-        p.pretty(self.test)
-        p.breakable()
-        p.text("then ")
-        p.pretty(self.true)
-        p.breakable()
-        p.text("else ")
-        p.pretty(self.false)
+class Parameter:
+    def __init__(self, name, typ, position=None):
+        assert name is not None
+        self.typ = typ
+        self.name = name
+        self.position = position
+
+    def __str__(self):
+        return self.name
 
 
-class FunctionDef(Expression):
-    def __init__(self, parameters, body, position: Optional[Position] = None):
-        assert body is not None
-        assert parameters is not None
+class FunctionDefinition(Expression):
+    def __init__(
+        self,
+        parameters: List[Parameter],
+        body: Expression,
+        builtin: bool,
+        position: Optional[Position] = None,
+    ):
         super().__init__(position)
         self.body = body
+        self.is_builtin = builtin
         self.parameters = parameters
 
-    def is_value(self):
-        return True
-
-    def is_builtin(self):
-        t = type(self.body)
-        return (
-            t in (pytypes.FunctionType, pytypes.MethodType)
-            or t.__name__ == "builtin_function_or_method"
-        )
-
-    def _repr_pretty_(self, p, cycle):
-        p.text("function(")
-        for idx, param in enumerate(self.parameters):
-            if idx != 0:
-                p.text(", ")
-            p.text(param.name)
-            if param.typ:
-                p.text(" : ")
-                p.pretty(param.typ)
-        p.text(") ")
-        p.pretty(self.body)
-
-
-class FunctionRef(FunctionDef):
     def __eq__(self, other):
         return (
             type(self) == type(other)
@@ -315,123 +194,51 @@ class FunctionRef(FunctionDef):
     def __hash__(self):
         return hash(tuple(p.name for p in self.parameters))
 
-    def call(self, runner, arguments):
-        an = len(arguments)
-        pn = len(self.parameters)
-        if an != pn:
-            logging.error(
-                f"Function: arguments '{pretty(arguments)}' -- parameters '{pretty(self.parameters)}'"
-            )
-            raise Exception(
-                f"The function defined at {self.position} takes {pn} arguments, not {an}."
-            )
-        pairs = list(zip([p.name for p in self.parameters], arguments))
-        if self.is_builtin():
-            body = self.body(runner, arguments)
-        else:
-            body = self.body.substitute(pairs, 0)
-        return body
+    def is_value(self):
+        return False
 
-    def substitute(self, pairs, threshold):
-        if self.is_builtin():
-            return self
-        return FunctionRef(
-            self.parameters,
-            self.body.substitute(pairs, threshold + len(self.parameters)),
+
+class Function(Expression):
+    def __init__(self, definition: FunctionDefinition, environment: Environment):
+        super().__init__(definition.position)
+        self.definition = definition
+        self.environment = environment
+
+    def __eq__(self, other):
+        return (
+            type(self) == type(other)
+            and self.definition == other.definition
+            and self.body == other.body
         )
 
-    def for_json(self):
-        return "function"
+    def __hash__(self):
+        return hash(tuple(p.name for p in self.parameters))
 
-
-class Parameter:
-    def __init__(self, name, typ, position=None):
-        assert name is not None
-        self.typ = typ
-        self.name = name
-        self.position = position
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.text(self.name)
-        p.text(" : ")
-        if self.typ:
-            p.pretty(self.typ)
-        else:
-            p.text("Any")
+    def is_value(self):
+        return True
 
 
 class Call(Expression):
-    def __init__(self, expression, arguments, position=None):
-        assert arguments is not None
-        assert expression is not None
+    def __init__(
+        self, expression: Expression, arguments: List[Expression], position=None
+    ):
         super().__init__(position)
         self.arguments = arguments
         self.expression = expression
 
-    def substitute(self, pairs, threshold):
-        arguments = [arg.substitute(pairs, threshold) for arg in self.arguments]
-        expression = self.expression.substitute(pairs, threshold)
-        return Call(expression, arguments)
 
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        # prints `(function(x) x)(y)` instead of `function(x) x()`.
-        if isinstance(self.expression, FunctionRef):
-            p.text("(")
-            p.pretty(self.expression)
-            p.text(")")
-        else:
-            p.pretty(self.expression)
-        p.text("(")
-        for idx, arg in enumerate(self.arguments):
-            if idx:
-                p.text(", ")
-            p.pretty(arg)
-        p.text(")")
-
-
-class Chain(Expression):
-    def __init__(self, function, argument, position=None):
-        assert function is not None
-        assert argument is not None
-        super().__init__(position)
-        self.argument = argument
-        self.function = function
-
-    def substitute(self, pairs, threshold):
-        argument = self.argument.substitute(pairs, threshold)
-        function = self.function.substitute(pairs, threshold)
-        return Chain(function, argument)
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.text("(")
-        p.pretty(self.function)
-        p.text(".")
-        p.pretty(self.argument)
-        p.text(")")
+# class Chain(Expression):
+#     def __init__(self, function: Function, argument: Expression, position=None):
+#         super().__init__(position)
+#         self.argument = argument
+#         self.function = function
 
 
 class Lookup(Expression):
-    def __init__(self, expression, var, position=None):
-        assert var is not None
-        assert expression is not None
+    def __init__(self, expression: Expression, var: Variable, position=None):
         super().__init__(position)
         self.var = var
         self.expression = expression
-
-    def substitute(self, pairs, threshold):
-        return Lookup(self.expression.substitute(pairs, threshold), self.var)
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        if isinstance(self.expression, (Bound, Variable, Reference)):
-            p.text(self.expression.name)
-        else:
-            p.pretty(self.expression)
-        p.text("::")
-        p.text(self.var.name)
 
 
 class NamespaceDefinition(Expression):
@@ -441,16 +248,6 @@ class NamespaceDefinition(Expression):
         super().__init__(position)
         self.name = name
         self.value = value
-
-    def substitute(self, pairs, threshold):
-        return NamespaceDefinition(self.name, self.value.substitute(pairs, threshold))
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.text(self.name)
-        p.text(" = ")
-        p.pretty(self.value)
-        p.text(";")
 
 
 class Namespace(Expression):
@@ -483,27 +280,13 @@ class Namespace(Expression):
         return Namespace(definitions)
 
     def lookup(self, name):
-        for d in self.definitions:
+        for d in reversed(self.definitions):
             if d.name == name:
-                return d
+                return d.value
         raise Exception(f"The namespace does not define a symbol named '{name}'.")
 
-    def substitute(self, pairs, threshold):
-        return Namespace([d.substitute(pairs, threshold) for d in self.definitions])
-
     def for_json(self):
-        return {d.name: d.value for d in self.definitions}
-
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.text("namespace {")
-        with p.group(4):
-            p.breakable()
-            for d in self.definitions:
-                p.pretty(d)
-                p.breakable()
-        p.breakable()
-        p.text("}")
+        return {d.name: d.value.for_json() for d in self.definitions}
 
 
 class Index(Expression):
@@ -514,14 +297,92 @@ class Index(Expression):
         self.lhs = lhs
         self.rhs = rhs
 
-    def substitute(self, pairs, threshold):
-        lhs = self.lhs.substitute(pairs, threshold)
-        rhs = self.rhs.substitute(pairs, threshold)
-        return Index(lhs, rhs)
 
-    def _repr_pretty_(self, p, cycle):
-        assert not cycle
-        p.pretty(self.lhs)
-        p.text("[")
-        p.pretty(self.rhs)
-        p.text("]")
+class Value(Expression):
+    def __init__(self, value, position: Optional[Position] = None):
+        assert value is not None
+        if isinstance(value, Node):
+            raise Exception(f"!{value.value}")
+        super().__init__(position)
+        self.value = value
+
+    def is_value(self):
+        return True
+
+    def __neg__(self):
+        return Value(-self.value)
+
+    def __hash__(self):
+        return hash(self.value)
+
+    def __eq__(self, other):
+        return Value(self.value == other.value)
+
+    def __ne__(self, other):
+        return Value(self.value != other.value)
+
+    def __lt__(self, other):
+        return Value(self.value < other.value)
+
+    def __le__(self, other):
+        return Value(self.value <= other.value)
+
+    def __gt__(self, other):
+        return Value(self.value > other.value)
+
+    def __ge__(self, other):
+        return Value(self.value >= other.value)
+
+    def __add__(self, other):
+        return Value(self.value + other.value)
+
+    def __sub__(self, other):
+        return Value(self.value - other.value)
+
+    def __mul__(self, other):
+        return Value(self.value * other.value)
+
+    def __pow__(self, other):
+        return Value(self.value ** other.value)
+
+    def __mod__(self, other):
+        return Value(self.value % other.value)
+
+    def __truediv__(self, other):
+        return Value(self.value / other.value)
+
+    def for_json(self):
+        return self.value
+
+
+class Array(Value):
+    def __init__(self, value, position=None):
+        assert value is not None
+        super().__init__(value, position=position)
+        assert isinstance(value, list)
+
+    def __add__(self, other):
+        if not isinstance(other, Array):
+            raise Exception(
+                f"Concatenation not defined between array and '{type(other)}'."
+            )
+        return Array(self.value + other.value)
+
+    def for_json(self):
+        return [v.for_json() for v in self.value]
+
+    def __eq__(self, other):
+        return from_value(self) == from_value(other)
+
+    def __str__(self):
+        return str(from_value(self))
+
+
+def from_value(value: Expression):
+    if isinstance(value, Array):
+        return [from_value(item) for item in value.value]
+    elif isinstance(value, Namespace):
+        return {item.name: from_value(item.value) for item in value.definitions}
+    elif isinstance(value, Value):
+        return value.value
+    raise ValueError(f"Not supported: {type(value)}")

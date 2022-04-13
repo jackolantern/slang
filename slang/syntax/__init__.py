@@ -12,9 +12,9 @@ class Position:
 
     def __repr__(self):
         return (
-            f"Position({self.rule},"
-            f"end_line={self.end_line},"
-            f"start_line={self.start_line},"
-            f"end_position={self.end_position},"
+            f"Position({self.rule}, "
+            f"end_line={self.end_line}, "
+            f"start_line={self.start_line}, "
+            f"end_position={self.end_position}, "
             f"start_position={self.start_position})"
         )
